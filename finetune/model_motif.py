@@ -1,16 +1,131 @@
 import torch
+from torch import Tensor
 from torch_geometric.nn import MessagePassing
-from torch_geometric.utils import add_self_loops, degree, softmax
+from torch_geometric.utils import to_dense_batch, add_self_loops, degree, softmax
 from torch_geometric.nn import global_add_pool, global_mean_pool, global_max_pool, GlobalAttention, Set2Set
 import torch.nn.functional as F
 from torch_scatter import scatter_add
 from torch_geometric.nn.inits import glorot, zeros
+from torch.nn import LayerNorm, Linear
+from torch import nn
+
+from typing import List, Optional, Tuple, Type
+import math
 
 num_atom_type = 120 #including the extra mask tokens
 num_chirality_tag = 3
 
 num_bond_type = 6 #including aromatic and self-loop edge, and extra masked tokens
 num_bond_direction = 3 
+
+
+def _weight_reset(block):
+    try:
+        block.reset_parameters()
+    except:
+        if isinstance(block, nn.Sequential):
+            for layer in block:
+                if isinstance(layer, nn.Linear):
+                    layer.reset_parameters()
+        else:
+            block.reset_parameters()
+
+class MAB(torch.nn.Module):
+    r"""Multihead-Attention Block."""
+    def __init__(self, dim_Q: int, dim_K: int, dim_V: int, num_heads: int, dropout: float = 0.0,
+                 Conv: Optional[Type]  = None, layer_norm: bool = False):
+        super().__init__()
+        self.dim_V = dim_V
+        self.num_heads = num_heads
+        self.layer_norm = layer_norm
+        self.dropout = dropout
+
+        self.fc_q = Linear(dim_Q, dim_V)
+
+        if Conv is None:
+            self.layer_k = Linear(dim_K, dim_V)
+            self.layer_v = Linear(dim_K, dim_V)
+        else:
+            self.layer_k = Conv(dim_K, dim_V)
+            self.layer_v = Conv(dim_K, dim_V)
+
+        if layer_norm:
+            self.ln0 = LayerNorm(dim_V)
+            self.ln1 = LayerNorm(dim_V)
+            #self.ln0 = ScaleNorm(1 / math.sqrt(dim_V))
+            #self.ln1 = ScaleNorm(1 / math.sqrt(dim_V))
+
+        self.fc_o = Linear(dim_V, dim_V)
+        self.ffn = nn.Sequential(
+                       nn.Linear(dim_V, dim_V),
+                       nn.ReLU(),
+                       nn.Linear(dim_V, dim_V)
+                   )
+
+    def reset_parameters(self):
+        _weight_reset(self.fc_q)
+        _weight_reset(self.layer_k)
+        _weight_reset(self.layer_v)
+        if self.layer_norm:
+            _weight_reset(self.ln0)
+            _weight_reset(self.ln1)
+        _weight_reset(self.fc_o)
+        _weight_reset(self.ffn)
+        pass
+
+    def forward(
+        self,
+        Q: Tensor,
+        K: Tensor,
+        graph: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
+        mask: Optional[Tensor] = None,
+    ) -> Tensor:
+
+        num_queries = Q.shape[1]
+        num_values = K.shape[1]
+        Qn = self.fc_q(Q)
+
+        if graph is not None:
+            x, edge_index, batch = graph
+            Kn, Vn = self.layer_k(x, edge_index), self.layer_v(x, edge_index)
+            Kn, _ = to_dense_batch(Kn, batch)
+            Vn, _ = to_dense_batch(Vn, batch)
+        else:
+            Kn, Vn = self.layer_k(K), self.layer_v(K)
+
+        dim_split = self.dim_V // self.num_heads
+        Q_ = torch.cat(Qn.split(dim_split, 2), dim=0)
+        K_ = torch.cat(Kn.split(dim_split, 2), dim=0)
+        V_ = torch.cat(Vn.split(dim_split, 2), dim=0)
+
+        if mask is not None:
+            #mask = torch.cat([mask for _ in range(self.num_heads)], 0)
+            mask = mask.repeat(self.num_heads, num_queries, 1)
+            max_neg_value = -torch.finfo(Q_.dtype).max
+            attention_score = Q_.bmm(K_.transpose(1, 2))
+            attention_score = attention_score / math.sqrt(self.dim_V)
+            attention_score.masked_fill_(~mask, max_neg_value)
+            #A = torch.softmax(mask + attention_score, 1)
+            A = torch.softmax(attention_score, 1)
+        else:
+            A = torch.softmax(
+                Q_.bmm(K_.transpose(1, 2)) / math.sqrt(self.dim_V), 1)
+
+        #out = torch.cat((Q_ + A.bmm(V_)).split(Q.size(0), 0), 2)
+        out = torch.cat(A.bmm(V_).split(Q.size(0), 0), 2)
+        out = Q + F.dropout(self.fc_o(out), self.dropout, training=self.training)
+
+        if self.layer_norm:
+            out = self.ln0(out)
+
+        #out = out + self.fc_o(out).relu()
+        out = out + F.dropout(self.ffn(out), self.dropout, training=self.training)
+
+        if self.layer_norm:
+            out = self.ln1(out)
+
+        return out
+
 
 class GINConv(MessagePassing):
     """
@@ -233,7 +348,7 @@ class GraphSAGEConv(MessagePassing):
 
 
 
-class GNN(torch.nn.Module):
+class GNN_M(torch.nn.Module):
     """
     
 
@@ -250,7 +365,7 @@ class GNN(torch.nn.Module):
 
     """
     def __init__(self, num_layer, emb_dim, JK = "last", drop_ratio = 0, gnn_type = "gin"):
-        super(GNN, self).__init__()
+        super(GNN_M, self).__init__()
         self.num_layer = num_layer
         self.drop_ratio = drop_ratio
         self.JK = JK
@@ -320,7 +435,7 @@ class GNN(torch.nn.Module):
         return node_representation
 
 
-class GNN_graphpred(torch.nn.Module):
+class GNN_M_graphpred(torch.nn.Module):
     """
     Extension of GIN to incorporate edge information by concatenation.
 
@@ -336,10 +451,20 @@ class GNN_graphpred(torch.nn.Module):
     See https://arxiv.org/abs/1810.00826
     JK-net: https://arxiv.org/abs/1806.03536
     """
-    def __init__(self, num_layer, emb_dim, num_tasks, JK = "last", drop_ratio = 0, graph_pooling = "mean", gnn_type = "gin"):
-        super(GNN_graphpred, self).__init__()
+    def __init__(self, num_motifs, num_layer, emb_dim, num_tasks, JK = "last", 
+            drop_ratio = 0, enc_dropout = 0., tfm_dropout = 0., dec_dropout = 0.,
+            enc_ln = True, tfm_ln = False, conc_ln = False, num_heads=4, graph_pooling = "mean", gnn_type = "gin"):
+        super(GNN_M_graphpred, self).__init__()
+        self.num_motifs = num_motifs
         self.num_layer = num_layer
         self.drop_ratio = drop_ratio
+        self.enc_dropout = enc_dropout
+        self.tfm_dropout = tfm_dropout
+        self.dec_dropout = dec_dropout
+        self.enc_ln = enc_ln
+        self.tfm_ln = tfm_ln
+        self.conc_ln = conc_ln
+        self.num_heads = num_heads
         self.JK = JK
         self.emb_dim = emb_dim
         self.num_tasks = num_tasks
@@ -347,7 +472,7 @@ class GNN_graphpred(torch.nn.Module):
         if self.num_layer < 2:
             raise ValueError("Number of GNN layers must be greater than 1.")
 
-        self.gnn = GNN(num_layer, emb_dim, JK, drop_ratio, gnn_type = gnn_type)
+        self.gnn = GNN_M(num_layer, emb_dim, JK, drop_ratio, gnn_type = gnn_type)
 
         #Different kind of graph pooling
         if graph_pooling == "sum":
@@ -376,21 +501,59 @@ class GNN_graphpred(torch.nn.Module):
         else:
             self.mult = 1
         
+
         if self.JK == "concat":
-            self.graph_pred_linear = torch.nn.Linear(self.mult * (self.num_layer + 1) * self.emb_dim, self.num_tasks)
+            cast_dims = (self.num_layer + 1) * self.emb_dim
+            self.clique_embedding = torch.nn.Embedding(num_motifs, cast_dims)
+            #self.graph_pred_linear = torch.nn.Linear((self.mult + 1) * cast_dims, self.num_tasks)
+            self.graph_pred_linear = torch.nn.Sequential(
+                    torch.nn.Linear((self.mult + 1) * cast_dims, self.mult * cast_dims),
+                    torch.nn.Linear(self.mult * cast_dims, self.num_tasks)
+            )
         else:
-            self.graph_pred_linear = torch.nn.Linear(self.mult * self.emb_dim, self.num_tasks)
+            cast_dims = self.emb_dim
+            self.clique_embedding = torch.nn.Embedding(num_motifs, cast_dims)
+            #self.graph_pred_linear = torch.nn.Linear((self.mult + 1) * cast_dims, self.num_tasks)
+            self.graph_pred_linear = torch.nn.Sequential(
+                    torch.nn.Linear((self.mult + 1) * cast_dims, self.mult * cast_dims),
+                    nn.ReLU(inplace=True),
+                    torch.nn.Linear(self.mult * cast_dims, self.num_tasks)
+            )
+
+        self.motif_pool = MAB(cast_dims, cast_dims, cast_dims, self.num_heads, tfm_dropout, layer_norm=tfm_ln)
+        self.motif_pool.reset_parameters()
+
+        if self.enc_ln:
+            self.motif_norm1 = torch.nn.LayerNorm(cast_dims)
+            _weight_reset(self.motif_norm1)
+        self.motif_enc = torch.nn.Sequential(
+                torch.nn.Linear(cast_dims, cast_dims),
+        )
+        _weight_reset(self.motif_enc)
+        self.motif_dec = torch.nn.Sequential(
+                torch.nn.Linear(cast_dims, cast_dims),
+        )
+        _weight_reset(self.motif_dec)
+
+        if conc_ln:
+            self.conc_norm1 = torch.nn.LayerNorm(cast_dims)
+            _weight_reset(self.conc_norm1)
 
     def from_pretrained(self, model_file):
-        #self.gnn = GNN(self.num_layer, self.emb_dim, JK = self.JK, drop_ratio = self.drop_ratio)
         self.gnn.load_state_dict(torch.load(model_file))
 
+    def init_clique_emb(self, init):
+        with torch.no_grad():
+            self.clique_embedding.weight.data.copy_(init)
+
     def forward(self, *argv):
-        if len(argv) == 4:
-            x, edge_index, edge_attr, batch = argv[0], argv[1], argv[2], argv[3]
-        elif len(argv) == 1:
+        if len(argv) == 6:
+            x, edge_index, edge_attr, batch, motif_idx, clique_idx = argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]
+        elif len(argv) == 3:
             data = argv[0]
             x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
+            motif_idx = argv[1]
+            clique_idx = argv[2]
         else:
             raise ValueError("unmatched number of arguments.")
 
@@ -398,7 +561,28 @@ class GNN_graphpred(torch.nn.Module):
 
         graph_representation = self.pool(node_representation, batch)
 
-        return graph_representation, self.graph_pred_linear(graph_representation) 
+        motif_representation = self.clique_embedding(clique_idx)
+        batch, mask = to_dense_batch(motif_representation, motif_idx)
+        mask = mask.unsqueeze(1)
+        batch = self.motif_enc(batch)
+        if self.enc_ln:
+            batch = self.motif_norm1(batch)
+        batch = F.dropout(batch, self.enc_dropout, training=self.training)
+        batch = self.motif_pool(graph_representation.detach().unsqueeze(1), batch, None, mask)
+        batch = self.motif_dec(batch)
+        batch = F.dropout(batch, self.dec_dropout, training=self.training)
+        motif_representation = batch.squeeze(1)
+
+        rep = torch.cat((graph_representation, motif_representation), dim=1)
+        if self.conc_ln:
+            rep = self.conc_norm1(rep)
+        else:
+            rep = F.normalize(rep, dim=1)
+
+        return graph_representation, self.graph_pred_linear(rep)
+
+        #return self.graph_pred_linear(self.pool(node_representation, batch))
+
 
 if __name__ == "__main__":
     pass

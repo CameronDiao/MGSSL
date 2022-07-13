@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 
 def create_var(tensor, requires_grad=None):
-    device = torch.device("cuda:" + "1") if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cuda:" + "0") if torch.cuda.is_available() else torch.device("cpu")
     if requires_grad is None:
         return Variable(tensor).to(device)
     else:
@@ -16,7 +16,7 @@ def index_select_ND(source, dim, index):
     target = source.index_select(dim, index.view(-1))
     return target.view(final_size)
 
-def GRU(x, h_nei, W_z, W_r, U_r, W_h):
+def GRU(x, h_nei, W_z, W_r, U_r, W_h, device):
     hidden_size = x.size()[-1]
     sum_h = h_nei.sum(dim=1)
     z_input = torch.cat([x,sum_h], dim=1)
@@ -31,6 +31,6 @@ def GRU(x, h_nei, W_z, W_r, U_r, W_h):
     h_input = torch.cat([x,sum_gated_h], dim=1)
     pre_h = nn.Tanh()(W_h(h_input))
     new_h = (1.0 - z) * sum_h + z * pre_h
-    return new_h
+    return new_h.to(device)
 
 

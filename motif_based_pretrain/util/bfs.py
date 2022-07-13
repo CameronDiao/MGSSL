@@ -114,7 +114,7 @@ class Motif_Generation_bfs(nn.Module):
 
             # Message passing
             cur_h_nei = torch.stack(cur_h_nei, dim=0).view(-1, MAX_NB, self.hidden_size)
-            new_h = GRU(cur_x, cur_h_nei, self.W_z, self.W_r, self.U_r, self.W_h)
+            new_h = GRU(cur_x.to(self.device), cur_h_nei.to(self.device), self.W_z, self.W_r, self.U_r, self.W_h, self.device)
 
             # Node Aggregate
             '''
@@ -147,8 +147,7 @@ class Motif_Generation_bfs(nn.Module):
                 #batch_list = [batch_list[i] for i in pred_list]
                 #cur_batch = create_var(torch.LongTensor(batch_list))
                 #pred_mol_vecs.append(mol_vec.index_select(0, cur_batch))
-
-                cur_pred = create_var(torch.LongTensor(pred_list))
+                cur_pred = torch.LongTensor(pred_list).to(self.device)
                 pred_hiddens.append(new_h.index_select(0, cur_pred))
                 pred_targets.extend(pred_target)
 

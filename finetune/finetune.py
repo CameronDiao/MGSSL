@@ -29,7 +29,7 @@ def train(args, model, device, loader, optimizer):
 
     for step, batch in enumerate(tqdm(loader, desc="Iteration")):
         batch = batch.to(device)
-        pred = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+        __, pred = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
         y = batch.y.view(pred.shape).to(torch.float64)
 
         #Whether y is non-null or not.
@@ -55,7 +55,7 @@ def eval(args, model, device, loader):
         batch = batch.to(device)
 
         with torch.no_grad():
-            pred = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
+            __, pred = model(batch.x, batch.edge_index, batch.edge_attr, batch.batch)
 
         y_true.append(batch.y.view(pred.shape))
         y_scores.append(pred)
@@ -81,7 +81,7 @@ def eval(args, model, device, loader):
 def main():
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch implementation of pre-training of graph neural networks')
-    parser.add_argument('--device', type=int, default=0,
+    parser.add_argument('--device', type=int, default=3,
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='input batch size for training (default: 32)')
@@ -104,7 +104,7 @@ def main():
     parser.add_argument('--JK', type=str, default="last",
                         help='how the node features across layers are combined. last, sum, max or concat')
     parser.add_argument('--gnn_type', type=str, default="gin")
-    parser.add_argument('--dataset', type=str, default = 'sider', help='root directory of dataset. For now, only classification.')
+    parser.add_argument('--dataset', type=str, default = 'tox21', help='root directory of dataset. For now, only classification.')
     parser.add_argument('--input_model_file', type=str, default = '../motif_based_pretrain/saved_model/motif_pretrain.pth', help='filename to read the model (if there is any)')
     parser.add_argument('--filename', type=str, default = '', help='output filename')
     parser.add_argument('--seed', type=int, default=42, help = "Seed for splitting the dataset.")

@@ -12,7 +12,7 @@ from rdkit.Chem import AllChem
 from rdkit import DataStructs
 from rdkit.Chem.rdMolDescriptors import GetMorganFingerprintAsBitVect
 from torch.utils import data
-from torch_geometric.data import Data
+from torch_geometric.data import Data, Dataset, DataLoader
 from torch_geometric.data import InMemoryDataset
 from torch_geometric.data import Batch
 from itertools import repeat, product, chain
@@ -50,6 +50,35 @@ allowable_features = {
     ]
 }
 
+class MolCliqueDataset(Dataset):
+    def __init__(self, clique_list):
+        super(Dataset, self).__init__()
+        self.clique_list = clique_list
+
+    def __getitem__(self, index):
+        mol = AllChem.MolFromSmiles(self.clique_list[index])
+
+        data = mol_to_graph_data_obj_simple(mol)
+        data.mol_index = index
+        return data
+
+    def __len__(self):
+        return len(self.clique_list)
+
+class MolCliqueDatasetWrapper(object):
+    
+    def __init__(self, clique_list, batch_size, num_workers):
+        super(object, self).__init__()
+        self.clique_list = clique_list
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+    def get_data_loaders(self):
+        train_dataset = MolCliqueDataset(self.clique_list)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size,
+                                  shuffle=False, num_workers=self.num_workers)
+        return train_loader
+    
 def mol_to_graph_data_obj_simple(mol):
     """
     Converts rdkit mol object to graph Data object required by the pytorch
@@ -297,6 +326,7 @@ class MoleculeDataset(InMemoryDataset):
             s[data.__cat_dim__(key, item)] = slice(slices[idx],
                                                     slices[idx + 1])
             data[key] = item[s]
+        data.mol_index = idx
         return data
 
 
@@ -340,6 +370,7 @@ class MoleculeDataset(InMemoryDataset):
                         id = int(zinc_id_list[i].split('ZINC')[1].lstrip('0'))
                         data.id = torch.tensor(
                             [id])  # id here is zinc id value, stripped of
+                        data.mol_index = i
                         # leading zeros
                         data_list.append(data)
                         data_smiles_list.append(smiles_list[i])
@@ -992,7 +1023,7 @@ def _load_bace_dataset(input_path):
     labels
     """
     input_df = pd.read_csv(input_path, sep=',')
-    smiles_list = input_df['mol']
+    smiles_list = input_df['smiles']
     rdkit_mol_objs_list = [AllChem.MolFromSmiles(s) for s in smiles_list]
     labels = input_df['Class']
     # convert 0 to -1
@@ -1165,7 +1196,7 @@ def _load_sider_dataset(input_path):
     labels = labels.replace(0, -1)
     assert len(smiles_list) == len(rdkit_mol_objs_list)
     assert len(smiles_list) == len(labels)
-    return smiles_list, rdkit_mol_objs_list, labels.value
+    return smiles_list, rdkit_mol_objs_list, labels.values
 
 def _load_toxcast_dataset(input_path):
     """
