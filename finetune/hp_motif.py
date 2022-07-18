@@ -1,7 +1,9 @@
 import argparse
 
+from rdkit import RDLogger
+
 from loader import MoleculeDataset, MolCliqueDatasetWrapper
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 
 import torch
 import torch.nn as nn
@@ -13,7 +15,8 @@ import numpy as np
 
 from model import GNN, GNN_graphpred
 from model_motif import GNN_M, GNN_M_graphpred
-from clique import get_mol, get_smiles, sanitize, get_clique_mol, brics_decomp, tree_decomp
+#from clique import get_mol, get_smiles, sanitize, get_clique_mol, brics_decomp, tree_decomp
+from vocab import get_mol, get_smiles, get_clique_mol, tree_decomp
 from sklearn.metrics import roc_auc_score
 
 from splitters import scaffold_split, random_split
@@ -127,7 +130,7 @@ def _ortho_constraint(device, prompt):
 def main(**kwargs):
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch implementation of pre-training of graph neural networks')
-    parser.add_argument('--device', type=int, default=3,
+    parser.add_argument('--device', type=int, default=0,
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='input batch size for training (default: 32)')
@@ -160,10 +163,11 @@ def main(**kwargs):
     parser.add_argument('--num_workers', type=int, default = 4, help='number of workers for dataset loading')
     args = parser.parse_args()
 
+    RDLogger.DisableLog('rdApp.*')
+
     torch.manual_seed(args.runseed)
     np.random.seed(args.runseed)
-    device = torch.device("cuda:" + str(args.device))
-    #device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.runseed)
 
@@ -192,23 +196,23 @@ def main(**kwargs):
     #set up dataset
     dataset = MoleculeDataset("dataset/" + args.dataset, dataset=args.dataset)
 
-    print(dataset)
+    #print(dataset)
     
     if args.split == "scaffold":
         smiles_list = pd.read_csv('dataset/' + args.dataset + '/processed/smiles.csv', header=None)[0].tolist()
         train_dataset, valid_dataset, test_dataset = scaffold_split(dataset, smiles_list, null_value=0, frac_train=0.8,frac_valid=0.1, frac_test=0.1)
-        print("scaffold")
+        #print("scaffold")
     elif args.split == "random":
         train_dataset, valid_dataset, test_dataset = random_split(dataset, null_value=0, frac_train=0.8,frac_valid=0.1, frac_test=0.1, seed = args.seed)
-        print("random")
+        #print("random")
     elif args.split == "random_scaffold":
         smiles_list = pd.read_csv('dataset/' + args.dataset + '/processed/smiles.csv', header=None)[0].tolist()
         train_dataset, valid_dataset, test_dataset = random_scaffold_split(dataset, smiles_list, null_value=0, frac_train=0.8,frac_valid=0.1, frac_test=0.1, seed = args.seed)
-        print("random scaffold")
+        #print("random scaffold")
     else:
         raise ValueError("Invalid split option.")
 
-    print(train_dataset[0])
+    #print(train_dataset[0])
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers = args.num_workers)
     val_loader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers = args.num_workers)
@@ -220,9 +224,11 @@ def main(**kwargs):
         for i, m in enumerate(smiles_data):
             mol_to_clique[i] = {}
             mol = get_mol(m)
-            cliques, edges = brics_decomp(mol)
-            if len(edges) <= 1:
-                cliques, edges = tree_decomp(mol)
+            
+            cliques, edges = tree_decomp(mol)
+            #cliques, edges = brics_decomp(mol)
+            #if len(edges) <= 1:
+            #    cliques, edges = tree_decomp(mol)
             for c in cliques:
                 cmol = get_clique_mol(mol, c)
                 cs = get_smiles(cmol)
@@ -267,7 +273,7 @@ def main(**kwargs):
     emp_mol, clique_list, mol_to_clique = filter_cliques(kwargs['threshold'], num_tasks, train_loader, clique_list, mol_to_clique, clique_to_mol)
     num_motifs = len(clique_list) + 2 * num_tasks
     #num_motifs = len(clique_list)
-    print("Finished generating motif vocabulary")
+    #print("Finished generating motif vocabulary")
 
     clique_dataset = MolCliqueDatasetWrapper(clique_list, args.batch_size, args.num_workers) 
     clique_loader = clique_dataset.get_data_loaders()
@@ -337,7 +343,7 @@ def main(**kwargs):
     model_param_group.append({"params": pred_params, "lr": kwargs['lr']})
     #model_param_group.append({"params": model.graph_pred_linear.parameters(), "lr":args.lr*args.lr_scale})
     optimizer = optim.Adam(model_param_group, lr=args.lr, weight_decay=args.decay)
-    print(optimizer)
+    #print(optimizer)
 
     best_val_acc = -1
     ass_test_acc = -1
@@ -364,9 +370,14 @@ def main(**kwargs):
         #print("train: %f val: %f test: %f" %(train_acc, val_acc, test_acc))
 
     avg_val_acc = sum(avg_val_acc) / len(avg_val_acc)
-    print("val: %f, test: %f" %(avg_val_acc, ass_test_acc))
+    print("average val: %f, test: %f" %(avg_val_acc, ass_test_acc))
+    print("last val: %f, test: %f" %(val_acc, test_acc))
+
+    #print("best val: %f, test: %f" %(best_val_acc, ass_test_acc))
+    #print("last val: %f, test: %f" %(val_acc, test_acc))
 
     return avg_val_acc, ass_test_acc
+    #return best_val_acc, ass_test_acc
 
 if __name__ == "__main__":
     main(threshold=10, lr=0.001, enc_dropout=0.3, tfm_dropout=0., dec_dropout=0., enc_ln=True, tfm_ln=False, conc_ln=False, num_heads=4)

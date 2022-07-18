@@ -507,17 +507,14 @@ class GNN_M_graphpred(torch.nn.Module):
             self.clique_embedding = torch.nn.Embedding(num_motifs, cast_dims)
             #self.graph_pred_linear = torch.nn.Linear((self.mult + 1) * cast_dims, self.num_tasks)
             self.graph_pred_linear = torch.nn.Sequential(
-                    torch.nn.Linear((self.mult + 1) * cast_dims, self.mult * cast_dims),
-                    torch.nn.Linear(self.mult * cast_dims, self.num_tasks)
+                    torch.nn.Linear((self.mult + 1) * cast_dims, self.num_tasks),
             )
         else:
             cast_dims = self.emb_dim
             self.clique_embedding = torch.nn.Embedding(num_motifs, cast_dims)
             #self.graph_pred_linear = torch.nn.Linear((self.mult + 1) * cast_dims, self.num_tasks)
             self.graph_pred_linear = torch.nn.Sequential(
-                    torch.nn.Linear((self.mult + 1) * cast_dims, self.mult * cast_dims),
-                    nn.ReLU(inplace=True),
-                    torch.nn.Linear(self.mult * cast_dims, self.num_tasks)
+                    torch.nn.Linear((self.mult + 1) * cast_dims, self.num_tasks),
             )
 
         self.motif_pool = MAB(cast_dims, cast_dims, cast_dims, self.num_heads, tfm_dropout, layer_norm=tfm_ln)
@@ -536,7 +533,7 @@ class GNN_M_graphpred(torch.nn.Module):
         _weight_reset(self.motif_dec)
 
         if conc_ln:
-            self.conc_norm1 = torch.nn.LayerNorm(cast_dims)
+            self.conc_norm1 = torch.nn.LayerNorm((self.mult + 1) * cast_dims)
             _weight_reset(self.conc_norm1)
 
     def from_pretrained(self, model_file):

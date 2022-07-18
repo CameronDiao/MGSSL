@@ -49,7 +49,7 @@ def objective(params):
     for __ in range(3):
         val_acc, __ = main(**params) 
         
-        res.append(val_acc)
+        res.append(-val_acc)
 
     ret = sum(res) / len(res)
     print(ret)

@@ -13,7 +13,8 @@ import numpy as np
 
 from model import GNN, GNN_graphpred
 from model_motif import GNN_M, GNN_M_graphpred
-from clique import get_mol, get_smiles, sanitize, get_clique_mol, brics_decomp, tree_decomp
+#from clique import get_mol, get_smiles, sanitize, get_clique_mol, brics_decomp, tree_decomp
+from vocab import get_mol, get_smiles, get_clique_mol, tree_decomp
 from sklearn.metrics import roc_auc_score
 
 from splitters import scaffold_split, random_split
@@ -47,8 +48,8 @@ def extract_cliques(device, batch, mol_to_clique, clique_list):
 def train(args, model, device, loader, optimizer, extract_cliques, clique_list, mol_to_clique):
     model.train()
 
-    #for step, batch in enumerate(tqdm(loader, desc="Iteration")):
-    for step, batch in enumerate(loader):
+    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+    #for step, batch in enumerate(loader):
         batch = batch.to(device)
 
         mol_idx, clique_idx = extract_cliques(device, batch, mol_to_clique, clique_list)
@@ -75,8 +76,8 @@ def eval(args, model, device, loader, clique_list, mol_to_clique):
     y_true = []
     y_scores = []
 
-    #for step, batch in enumerate(tqdm(loader, desc="Iteration")):
-    for step, batch in enumerate(loader):
+    for step, batch in enumerate(tqdm(loader, desc="Iteration")):
+    #for step, batch in enumerate(loader):
         batch = batch.to(device)
 
         mol_idx, clique_idx = extract_cliques(device, batch, mol_to_clique, clique_list)
@@ -97,9 +98,9 @@ def eval(args, model, device, loader, clique_list, mol_to_clique):
             is_valid = y_true[:,i]**2 > 0
             roc_list.append(roc_auc_score((y_true[is_valid,i] + 1)/2, y_scores[is_valid,i]))
 
-    #if len(roc_list) < y_true.shape[1]:
-    #    print("Some target is missing!")
-    #    print("Missing ratio: %f" %(1 - float(len(roc_list))/y_true.shape[1]))
+    if len(roc_list) < y_true.shape[1]:
+        print("Some target is missing!")
+        print("Missing ratio: %f" %(1 - float(len(roc_list))/y_true.shape[1]))
 
     return sum(roc_list)/len(roc_list) #y_true.shape[1]
 
@@ -127,7 +128,7 @@ def _ortho_constraint(device, prompt):
 def main(**kwargs):
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch implementation of pre-training of graph neural networks')
-    parser.add_argument('--device', type=int, default=3,
+    parser.add_argument('--device', type=int, default=0,
                         help='which gpu to use if any (default: 0)')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='input batch size for training (default: 32)')
@@ -156,15 +157,14 @@ def main(**kwargs):
     parser.add_argument('--seed', type=int, default=42, help = "Seed for splitting the dataset.")
     parser.add_argument('--runseed', type=int, default=0, help = "Seed for minibatch selection, random initialization.")
     parser.add_argument('--split', type = str, default="scaffold", help = "random or scaffold or random_scaffold")
-    parser.add_argument('--eval_train', type=int, default = 0, help='evaluating training or not')
+    parser.add_argument('--eval_train', type=int, default = 1, help='evaluating training or not')
     parser.add_argument('--num_workers', type=int, default = 4, help='number of workers for dataset loading')
     args = parser.parse_args()
 
 
     torch.manual_seed(args.runseed)
     np.random.seed(args.runseed)
-    device = torch.device("cuda:" + str(args.device))
-    #device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
+    device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.runseed)
 
@@ -221,9 +221,10 @@ def main(**kwargs):
         for i, m in enumerate(smiles_data):
             mol_to_clique[i] = {}
             mol = get_mol(m)
-            cliques, edges = brics_decomp(mol)
-            if len(edges) <= 1:
-                cliques, edges = tree_decomp(mol)
+            #cliques, edges = brics_decomp(mol)
+            #if len(edges) <= 1:
+            #    cliques, edges = tree_decomp(mol)
+            cliques, edges = tree_decomp(mol)
             for c in cliques:
                 cmol = get_clique_mol(mol, c)
                 cs = get_smiles(cmol)
@@ -342,32 +343,34 @@ def main(**kwargs):
 
     best_val_acc = -1
     ass_test_acc = -1
-    avg_val_acc = []
+    #avg_val_acc = []
     for epoch in range(1, args.epochs+1):
-        #print("====epoch " + str(epoch))
+        print("====epoch " + str(epoch))
         
         train(args, model, device, train_loader, optimizer, extract_cliques, clique_list, mol_to_clique)
 
-        #print("====Evaluation")
+        print("====Evaluation")
         if args.eval_train:
             train_acc = eval(args, model, device, train_loader, clique_list, mol_to_clique)
         else:
-            #print("omit the training accuracy computation")
+            print("omit the training accuracy computation")
             train_acc = 0
         val_acc = eval(args, model, device, val_loader, clique_list, mol_to_clique)
         test_acc = eval(args, model, device, test_loader, clique_list, mol_to_clique)
 
-        avg_val_acc.append(val_acc)
+        #avg_val_acc.append(val_acc)
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             ass_test_acc = test_acc
 
-        #print("train: %f val: %f test: %f" %(train_acc, val_acc, test_acc))
+        print("train: %f val: %f test: %f" %(train_acc, val_acc, test_acc))
 
-    avg_val_acc = sum(avg_val_acc) / len(avg_val_acc)
-    print("val: %f, test: %f" %(avg_val_acc, ass_test_acc))
+    #avg_val_acc = sum(avg_val_acc) / len(avg_val_acc)
+    #print("val: %f, test: %f" %(avg_val_acc, ass_test_acc))
+    print("val: %f, test: %f" %(best_val_acc, ass_test_acc))
 
-    return avg_val_acc, ass_test_acc
+    #return avg_val_acc, ass_test_acc
+    return best_val_acc, ass_test_acc
 
 if __name__ == "__main__":
     main(threshold=10, lr=0.001, enc_dropout=0.3, tfm_dropout=0., dec_dropout=0., enc_ln=True, tfm_ln=False, conc_ln=False, num_heads=4)
